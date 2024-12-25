@@ -1,11 +1,16 @@
 using System.IO;
+using System.Net.Http.Json;
 using System.Reflection.Metadata;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading.Tasks;
 using AutoMapper;
+using Azure.Storage.Blobs;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
 using OfficeOpenXml;
 using TestFunction1.Models;
+using Azure.Messaging.ServiceBus;
 
 namespace TestFunction1
 {
@@ -13,6 +18,8 @@ namespace TestFunction1
     {
         private readonly ILogger<SFTPMonitor> _logger;
         private readonly IMapper _mapper;
+        private readonly string serviceBusConnectionString = Environment.GetEnvironmentVariable("SFTPServiceBusConnectionString");
+        private readonly string queueName = "incoming";
 
         public SFTPMonitor(ILogger<SFTPMonitor> logger, IMapper mapper)
         {
@@ -21,7 +28,9 @@ namespace TestFunction1
         }
 
         [Function(nameof(SFTPMonitor))]
-        public async Task Run([BlobTrigger("bettertrucks/{name}", Connection = "AzureWebJobsStorage")] Stream myBlob, string name)
+        public async Task Run([BlobTrigger("incoming/{name}", Connection = "AzureWebJobsStorage")] Stream myBlob, 
+            string name,
+            string blobTrigger)
         {
             // Check if the file extension is .xlsx
             if (!name.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase))
@@ -33,9 +42,34 @@ namespace TestFunction1
 
             try
             {
+                var relativePath = blobTrigger.StartsWith("incoming/")
+                    ? blobTrigger.Substring("incoming/".Length)
+                    : blobTrigger;
+
+                // Extract the folder path from the relative path
+                var folderPath = Path.GetDirectoryName(relativePath) ?? string.Empty;
+
+                var settingsBlobPath = Path.Combine(folderPath, "settings.json");
+                var settings = await LoadSettingsFile(settingsBlobPath);
+
                 // Process the blob content and convert it to a list of ExcelRecord objects
                 List<BetterTrucksOrder> records = ProcessExcelFile(myBlob);
                 List<AmerishipOrder> amerishipOrders = ConvertOrders(records);
+                List<CustomerOrderDTO> orderDtos = new List<CustomerOrderDTO>();
+
+                foreach(var order  in amerishipOrders)
+                {
+                    CustomerOrderDTO newOrder = new CustomerOrderDTO
+                    {
+                        Settings = settings,
+                        Order = order
+                    };
+
+                    orderDtos.Add(newOrder);
+
+                }
+
+                await SendMessagesToServiceBus(orderDtos);
 
                 // Log the number of records processed
                 _logger.LogInformation($"Successfully processed {records.Count} records.");
@@ -44,6 +78,45 @@ namespace TestFunction1
             {
                 _logger.LogError($"Error processing blob {name}: {ex.Message}");
             }
+        }
+
+        private async Task<CustomerSettings> LoadSettingsFile(string settingsFilePath)
+        {
+            try
+            {
+                // Read settings.json from the same folder
+                var settingsContent = await ReadBlobContentAsync("incoming", settingsFilePath);
+                _logger.LogInformation($"settings.json content: {settingsContent}");
+                CustomerSettings settings = JsonSerializer.Deserialize<CustomerSettings>(settingsContent);
+                return settings ?? throw new Exception("Failed to deserialize settings.json");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError($"Error accessing settings.json: {ex.Message}");
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Reads the content of a blob from Azure Storage.
+        /// </summary>
+        /// <param name="containerName">The container name.</param>
+        /// <param name="blobName">The blob name.</param>
+        /// <returns>The blob content as a string.</returns>
+        private static async Task<string> ReadBlobContentAsync(string containerName, string blobName)
+        {
+            var blobServiceClient = new BlobServiceClient(Environment.GetEnvironmentVariable("AzureWebJobsStorage"));
+            var blobContainerClient = blobServiceClient.GetBlobContainerClient(containerName);
+            var blobClient = blobContainerClient.GetBlobClient(blobName);
+
+            if (await blobClient.ExistsAsync())
+            {
+                var response = await blobClient.DownloadContentAsync();
+                return response.Value.Content.ToString();
+            }
+
+            throw new FileNotFoundException($"Blob '{blobName}' not found in container '{containerName}'.");
         }
 
 
@@ -123,6 +196,36 @@ namespace TestFunction1
             }
 
             return records;
+        }
+
+        private async Task SendMessagesToServiceBus(List<CustomerOrderDTO> orderDtos)
+        {
+            await using var client = new ServiceBusClient(serviceBusConnectionString);
+            var sender = client.CreateSender(queueName);
+
+            var messages = new List<ServiceBusMessage>();
+
+            foreach (var orderDto in orderDtos)
+            {
+                string messageBody = JsonSerializer.Serialize(orderDto);
+                var message = new ServiceBusMessage(messageBody)
+                {
+                    ContentType = "application/json",
+                    MessageId = Guid.NewGuid().ToString()
+                };
+
+                messages.Add(message);
+            }
+
+            try
+            {
+                await sender.SendMessagesAsync(messages);
+                _logger.LogInformation($"Sent {messages.Count} messages to Service Bus queue: {queueName}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError($"Error sending messages to Service Bus: {ex.Message}");
+            }
         }
 
         private List<AmerishipOrder> ConvertOrders(List<BetterTrucksOrder> sourceList)
