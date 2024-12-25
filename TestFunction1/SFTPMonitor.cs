@@ -59,6 +59,13 @@ namespace TestFunction1
 
                 foreach(var order  in amerishipOrders)
                 {
+                    
+                    order.collectionLocation = settings.Location;
+                    order.priceSet = settings.PriceSet;
+
+                    //setting description to empty string due to error if value is null
+                    order.description = string.Empty;
+
                     CustomerOrderDTO newOrder = new CustomerOrderDTO
                     {
                         Settings = settings,

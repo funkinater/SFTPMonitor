@@ -13,5 +13,7 @@ namespace TestFunction1.Models
         public string ApiKey { get; set; }
         [JsonPropertyName("priceSet")]
         public string PriceSet { get; set; }
+        [JsonPropertyName("location")]
+        public Location Location { get; set; }
     }
 }

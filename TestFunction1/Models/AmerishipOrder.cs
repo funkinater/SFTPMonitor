@@ -15,12 +15,12 @@ namespace TestFunction1.Models
         public string comments { get; set; }
         public bool collectionCODRequired { get; set; }
         public bool collectionSignatureRequired { get; set; }
-        public float? height { get; set; }
-        public float? width { get; set; }
-        public float? length { get; set; }
+        public decimal height { get; set; }
+        public decimal width { get; set; }
+        public decimal length { get; set; }
         public string routeName { get; set; }
         public string collectionContactName { get; set; }
-        public float? weight { get; set; }
+        public decimal weight { get; set; }
         public int quantity { get; set; }
         public string priceSet { get; set; }
         public bool deliverySignatureRequired { get; set; }
@@ -28,7 +28,7 @@ namespace TestFunction1.Models
         public Location? deliveryLocation { get; set; }
         public int declaredValue { get; set; }
         public string signatureType { get; set; }
-        public bool? isAdultSignature { get; set; }
+        public bool isAdultSignature { get; set; }
     }
 
     public class Location
